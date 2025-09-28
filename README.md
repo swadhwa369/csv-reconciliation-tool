@@ -390,6 +390,73 @@ This project is open source. Feel free to use and modify as needed.
 4. Ensure all tests pass
 5. Submit a pull request
 
+## 🌐 Custom Domain & SSL (Heroku + Namecheap)
+
+To set up a custom domain with SSL for your deployed CSV Reconciliation Tool:
+
+### Prerequisites
+- Heroku account with paid dyno (Basic tier minimum for ACM)
+- Domain registered with Namecheap (or any DNS provider)
+- App already deployed to Heroku
+
+### Step 1: Add Domain in Heroku
+```bash
+# In Heroku Dashboard: Settings → Domains → Add domain
+# Or via CLI:
+heroku domains:add reconcile.opslab.app -a your-app-name
+```
+
+Copy the **DNS Target** (something like `your-app-name-123abc.herokudns.com`) from the Heroku dashboard.
+
+### Step 2: Configure DNS in Namecheap
+1. Go to Namecheap → Domain List → Manage → Advanced DNS
+2. Add a new **CNAME Record**:
+   - **Host**: `reconcile`
+   - **Value**: `your-app-name-123abc.herokudns.com` (the DNS target from Heroku)
+   - **TTL**: Automatic
+3. Remove any conflicting A, AAAA, or URL Redirect records for the `reconcile` subdomain
+
+### Step 3: Enable ACM (Automated Certificate Management)
+```bash
+# Upgrade to paid dyno (required for ACM)
+heroku ps:type web=basic -a your-app-name
+
+# Enable automatic SSL
+heroku certs:auto:enable -a your-app-name
+
+# Wait for certificate provisioning
+heroku domains:wait reconcile.opslab.app -a your-app-name
+```
+
+### Step 4: Update Environment Variables
+```bash
+# Set your custom domain in environment
+heroku config:set ALLOW_ORIGINS="https://reconcile.opslab.app,https://your-app-name.herokuapp.com" -a your-app-name
+heroku config:set APP_PUBLIC_URL="https://reconcile.opslab.app" -a your-app-name
+```
+
+### Step 5: Verify Setup
+```bash
+# Test your custom domain
+curl -I https://reconcile.opslab.app/_health
+
+# Or open in browser
+open https://reconcile.opslab.app/docs
+```
+
+### 📝 Important Notes
+- **`.app` domains require HTTPS** (HSTS preloaded)
+- **ACM can take 15-60 minutes** after DNS propagates
+- **DNS propagation** typically takes 5-15 minutes
+- If using a different subdomain, update the `ALLOW_ORIGINS` environment variable accordingly
+- You can verify DNS propagation with: `dig reconcile.opslab.app`
+
+### 🔧 Troubleshooting
+- **502 Bad Gateway**: Check if your dyno is running (`heroku ps -a your-app-name`)
+- **SSL Certificate Error**: Wait longer for ACM, or check DNS configuration
+- **CORS Errors**: Ensure your domain is in `ALLOW_ORIGINS`
+- **DNS Issues**: Use `dig reconcile.opslab.app` to verify CNAME is pointing correctly
+
 ---
 
 **Need help?** Check the interactive API documentation at `/docs` or examine the test cases for usage examples. 

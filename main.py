@@ -12,10 +12,27 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, Reque
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.middleware.gzip import GZipMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel, validator, Field
 from rapidfuzz import fuzz
 import jellyfish
 import time
+
+# Custom middleware to handle Heroku proxy headers
+class ProxyHeadersMiddleware(BaseHTTPMiddleware):
+    """Handle X-Forwarded-* headers from Heroku's routing layer"""
+    async def dispatch(self, request, call_next):
+        # Trust Heroku's proxy headers
+        if "x-forwarded-proto" in request.headers:
+            request.scope["scheme"] = request.headers["x-forwarded-proto"]
+        if "x-forwarded-host" in request.headers:
+            request.scope["server"] = (request.headers["x-forwarded-host"], None)
+        
+        response = await call_next(request)
+        return response
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -27,19 +44,30 @@ app = FastAPI(
 # Create API router for all API endpoints
 api_router = APIRouter(prefix="/api")
 
-# Add CORS middleware
+# Environment-based configuration
+ALLOW_ORIGINS = os.environ.get(
+    "ALLOW_ORIGINS", 
+    "https://reconcile.opslab.app,https://*.herokuapp.com,http://localhost:3000,http://localhost:8000"
+).split(",")
+
+# Add security and performance middlewares (order matters!)
+app.add_middleware(ProxyHeadersMiddleware)  # Handle X-Forwarded-* from Heroku
+app.add_middleware(GZipMiddleware, minimum_size=1000)  # Compress responses
+app.add_middleware(HTTPSRedirectMiddleware)  # Enforce HTTPS in production
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*", ".herokuapp.com", ".opslab.app"])
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOW_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Mount static files for frontend assets
-frontend_dist = Path("./frontend/dist")
-if frontend_dist.exists():
-    app.mount("/assets", StaticFiles(directory=str(frontend_dist / "assets")), name="assets")
+# Frontend static files configuration
+FRONTEND_DIR = Path(__file__).parent / "frontend" / "dist"
+if FRONTEND_DIR.exists():
+    # Mount assets with proper caching headers
+    app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIR / "assets")), name="assets")
 
 # Configuration
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
@@ -897,12 +925,30 @@ async def preview_files(session_id: str = Query(...), n: int = Query(default=100
         raise HTTPException(status_code=500, detail=f"Preview failed: {str(e)}")
 
 
+# Health and debug endpoints (before main routes)
+@app.get("/_health")
+async def health_check():
+    """Simple health check endpoint for load balancers and monitoring"""
+    return {"ok": True}
+
+@app.get("/_debug")
+async def debug_info():
+    """Debug endpoint to verify configuration (no secrets exposed)"""
+    return {
+        "allowed_hosts": ["*", ".herokuapp.com", ".opslab.app"],
+        "allow_origins": ALLOW_ORIGINS,
+        "has_frontend": FRONTEND_DIR.exists(),
+        "frontend_path": str(FRONTEND_DIR),
+        "session_dir_exists": SESSION_DIR.exists(),
+        "environment": os.environ.get("ENVIRONMENT", "development")
+    }
+
 @app.get("/")
 async def root(request: Request):
     """Serve frontend index.html or API info based on Accept header"""
     
     # Check if frontend exists
-    frontend_index = frontend_dist / "index.html"
+    frontend_index = FRONTEND_DIR / "index.html"
     
     # Check if request is from a browser (Accept header contains text/html)
     accept_header = request.headers.get("accept", "")
@@ -1465,10 +1511,14 @@ app.include_router(api_router)
 @app.get("/{full_path:path}")
 async def spa_fallback(full_path: str):
     """Serve index.html for SPA routes or 404 for API routes"""
-    frontend_index = frontend_dist / "index.html"
+    frontend_index = FRONTEND_DIR / "index.html"
     
-    # If this looks like an API route, return 404
-    if full_path.startswith("api/") or full_path.startswith("docs") or full_path.startswith("openapi.json"):
+    # If this looks like an API route or debug endpoint, return 404
+    if (full_path.startswith("api/") or 
+        full_path.startswith("docs") or 
+        full_path.startswith("openapi.json") or
+        full_path.startswith("_health") or
+        full_path.startswith("_debug")):
         raise HTTPException(status_code=404, detail="Not Found")
     
     # If frontend exists, serve index.html for SPA routing
