@@ -8,9 +8,10 @@ from typing import Dict, List, Optional, Tuple, Literal
 
 import pandas as pd
 import uvicorn
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, Request
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, Request, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, validator, Field
 from rapidfuzz import fuzz
 import jellyfish
@@ -23,6 +24,9 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Create API router for all API endpoints
+api_router = APIRouter(prefix="/api")
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -31,6 +35,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount static files for frontend assets
+frontend_dist = Path("./frontend/dist")
+if frontend_dist.exists():
+    app.mount("/assets", StaticFiles(directory=str(frontend_dist / "assets")), name="assets")
 
 # Configuration
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
@@ -493,13 +502,13 @@ async def startup_event():
 
 
 # Endpoints
-@app.get("/health")
+@api_router.get("/health")
 async def health_check():
     """Health check endpoint"""
     return {"ok": True}
 
 
-@app.post("/upload")
+@api_router.post("/upload")
 async def upload_files(file_a: UploadFile = File(...), file_b: UploadFile = File(...)):
     """Upload two CSV files and return session info"""
     
@@ -561,7 +570,7 @@ async def upload_files(file_a: UploadFile = File(...), file_b: UploadFile = File
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 
-@app.post("/reconcile")
+@api_router.post("/reconcile")
 async def reconcile_files(request: ReconcileRequest):
     """Reconcile two CSV files based on the specified join mode"""
     
@@ -822,7 +831,7 @@ async def reconcile_files(request: ReconcileRequest):
         raise HTTPException(status_code=500, detail=f"Reconciliation failed: {str(e)}")
 
 
-@app.get("/download/{file_type}")
+@api_router.get("/download/{file_type}")
 async def download_file(file_type: str, session_id: str = Query(...)):
     """Download reconciliation results"""
     
@@ -852,7 +861,7 @@ async def download_file(file_type: str, session_id: str = Query(...)):
     )
 
 
-@app.get("/preview")
+@api_router.get("/preview")
 async def preview_files(session_id: str = Query(...), n: int = Query(default=100)):
     """Preview first N rows of both uploaded files"""
     
@@ -890,11 +899,19 @@ async def preview_files(session_id: str = Query(...), n: int = Query(default=100
 
 @app.get("/")
 async def root(request: Request):
-    """Root endpoint with user-friendly HTML page for browsers and JSON for API clients"""
+    """Serve frontend index.html or API info based on Accept header"""
+    
+    # Check if frontend exists
+    frontend_index = frontend_dist / "index.html"
     
     # Check if request is from a browser (Accept header contains text/html)
     accept_header = request.headers.get("accept", "")
     if "text/html" in accept_header:
+        # If frontend exists, serve it
+        if frontend_index.exists():
+            return FileResponse(str(frontend_index))
+        
+        # Otherwise serve the built-in web interface
         html_content = """
 <!DOCTYPE html>
 <html lang="en">
@@ -1220,7 +1237,7 @@ async def root(request: Request):
             showStatus('⏳ Uploading files...', 'info');
             
             try {
-                const response = await fetch('/upload', {
+                const response = await fetch('/api/upload', {
                     method: 'POST',
                     body: formData
                 });
@@ -1354,7 +1371,7 @@ async def root(request: Request):
             showStatus('⏳ Processing reconciliation...', 'info');
             
             try {
-                const response = await fetch('/reconcile', {
+                const response = await fetch('/api/reconcile', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
@@ -1387,9 +1404,9 @@ async def root(request: Request):
             `;
             
             // Set up download links
-            document.getElementById('download-merged').href = `/download/merged?session_id=${sessionId}`;
-            document.getElementById('download-diffs').href = `/download/diffs?session_id=${sessionId}`;
-            document.getElementById('download-log').href = `/download/qa_log?session_id=${sessionId}`;
+            document.getElementById('download-merged').href = `/api/download/merged?session_id=${sessionId}`;
+            document.getElementById('download-diffs').href = `/api/download/diffs?session_id=${sessionId}`;
+            document.getElementById('download-log').href = `/api/download/qa_log?session_id=${sessionId}`;
             
             document.getElementById('results-section').classList.remove('hidden');
             document.getElementById('reconcile-btn').style.display = 'none';
@@ -1424,21 +1441,42 @@ async def root(request: Request):
         "endpoints": {
             "documentation": "/docs",
             "health": "/health",
-            "upload": "POST /upload",
-            "reconcile": "POST /reconcile", 
-            "download": "GET /download/{file_type}?session_id=...",
-            "preview": "GET /preview?session_id=..."
+            "upload": "POST /api/upload",
+            "reconcile": "POST /api/reconcile", 
+            "download": "GET /api/download/{file_type}?session_id=...",
+            "preview": "GET /api/preview?session_id=..."
         },
         "workflow": [
-            "1. POST /upload with two CSV files",
-            "2. POST /reconcile with join configuration", 
-            "3. GET /download/{merged|diffs|qa_log} for results"
+            "1. POST /api/upload with two CSV files",
+            "2. POST /api/reconcile with join configuration", 
+            "3. GET /api/download/{merged|diffs|qa_log} for results"
         ],
         "sample_usage": {
             "interactive_docs": "Visit /docs for interactive API testing",
             "sample_data": "Use sample_data/customers_a.csv and customers_b.csv for testing"
         }
     }
+
+
+# Include API router
+app.include_router(api_router)
+
+# SPA fallback - serve index.html for any unmatched routes (must be last)
+@app.get("/{full_path:path}")
+async def spa_fallback(full_path: str):
+    """Serve index.html for SPA routes or 404 for API routes"""
+    frontend_index = frontend_dist / "index.html"
+    
+    # If this looks like an API route, return 404
+    if full_path.startswith("api/") or full_path.startswith("docs") or full_path.startswith("openapi.json"):
+        raise HTTPException(status_code=404, detail="Not Found")
+    
+    # If frontend exists, serve index.html for SPA routing
+    if frontend_index.exists():
+        return FileResponse(str(frontend_index))
+    
+    # Otherwise return 404
+    raise HTTPException(status_code=404, detail="Not Found")
 
 
 if __name__ == "__main__":
