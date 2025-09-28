@@ -1,0 +1,25 @@
+{
+  "name": "CSV Reconciliation Tool",
+  "description": "A production-lean FastAPI app for reconciling CSV files with exact, fuzzy, phonetic, date tolerance, and numeric tolerance joins",
+  "repository": "https://github.com/swadhwa369/csv-reconciliation-tool",
+  "logo": "https://fastapi.tiangolo.com/img/logo-margin/logo-teal.png",
+  "keywords": ["fastapi", "csv", "data-reconciliation", "pandas", "fuzzy-matching", "python"],
+  "env": {
+    "PYTHONPATH": {
+      "description": "Python path configuration",
+      "value": "."
+    }
+  },
+  "buildpacks": [
+    {
+      "url": "heroku/python"
+    }
+  ],
+  "formation": {
+    "web": {
+      "quantity": 1,
+      "size": "basic"
+    }
+  },
+  "stack": "heroku-22"
+} 
