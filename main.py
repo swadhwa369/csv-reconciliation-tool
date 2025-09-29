@@ -5,9 +5,11 @@ import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Literal
+from dataclasses import dataclass
 
 import pandas as pd
 import uvicorn
+import stripe
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, Request, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, HTMLResponse, FileResponse
@@ -74,6 +76,18 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 MAX_ROWS = 100000
 SESSION_DIR = Path("./sessions")
 SESSION_CLEANUP_HOURS = 6
+
+# Billing & Paywall Configuration
+stripe.api_key = os.environ.get("STRIPE_SECRET_KEY")
+STRIPE_PUBLISHABLE_KEY = os.environ.get("STRIPE_PUBLISHABLE_KEY")
+
+# Owner whitelist - these emails can download without payment
+OWNER_EMAILS = os.environ.get("OWNER_EMAILS", "shreyawadhwa369@gmail.com")
+OWNER_SET = {e.strip().lower() for e in OWNER_EMAILS.split(",") if e.strip()}
+
+# In-memory session tracking for payment status
+# Structure: {session_id: {"paid": bool, "email": str, "created_at": datetime}}
+sessions: Dict[str, Dict] = {}
 
 # Pydantic models
 class ReconcileRequest(BaseModel):
@@ -160,6 +174,63 @@ def cleanup_old_sessions():
                     print(f"Failed to clean up session {session_folder.name}: {e}")
     except Exception as e:
         print(f"Session cleanup failed: {e}")
+
+
+# Billing & Paywall Helper Functions
+
+@dataclass
+class BillingStatus:
+    """Billing status for a customer"""
+    active: bool
+    renewal: Optional[int] = None  # Timestamp for renewal date
+
+
+def is_owner(email: str | None) -> bool:
+    """Check if email is in owner whitelist"""
+    return bool(email and email.strip().lower() in OWNER_SET)
+
+
+def billing_status_internal(email: str) -> BillingStatus:
+    """
+    Check if email has an active Stripe subscription
+    Returns BillingStatus with active status and renewal date
+    """
+    if not email or not email.strip():
+        return BillingStatus(active=False)
+    
+    # Check if Stripe is configured
+    if not stripe.api_key:
+        print("Warning: STRIPE_SECRET_KEY not configured")
+        return BillingStatus(active=False)
+    
+    try:
+        # Search for customer by email
+        customers = stripe.Customer.list(email=email.strip().lower(), limit=1)
+        
+        if not customers.data:
+            return BillingStatus(active=False)
+        
+        customer = customers.data[0]
+        
+        # Get active subscriptions for this customer
+        subscriptions = stripe.Subscription.list(
+            customer=customer.id,
+            status='active',
+            limit=1
+        )
+        
+        if subscriptions.data:
+            subscription = subscriptions.data[0]
+            return BillingStatus(
+                active=True,
+                renewal=subscription.current_period_end
+            )
+        
+        return BillingStatus(active=False)
+        
+    except Exception as e:
+        print(f"Stripe API error for {email}: {e}")
+        return BillingStatus(active=False)
 
 
 def load_csv_safely(file_path: Path) -> pd.DataFrame:
@@ -860,20 +931,64 @@ async def reconcile_files(request: ReconcileRequest):
 
 
 @api_router.get("/download/{file_type}")
-async def download_file(file_type: str, session_id: str = Query(...)):
-    """Download reconciliation results"""
+async def download_file(
+    file_type: str, 
+    session_id: str = Query(...), 
+    email: str | None = Query(None, description="Email for subscription verification or owner access")
+):
+    """
+    Download reconciliation results (CSV files)
     
+    Access control:
+    - Owners (whitelisted emails) can download unconditionally
+    - Paid sessions can download without email  
+    - Non-owners with active Stripe subscriptions can download
+    - Others must subscribe or pay per session
+    """
+    
+    # Validate file type first
     if file_type not in ['merged', 'diffs', 'qa_log']:
         raise HTTPException(status_code=400, detail="file_type must be one of: merged, diffs, qa_log")
     
+    # Check if session exists
     session_dir = SESSION_DIR / session_id
     if not session_dir.exists():
         raise HTTPException(status_code=404, detail="Session not found")
     
+    # Check if file exists
     file_path = session_dir / f"{file_type}.csv"
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"{file_type}.csv not found. Run /reconcile first.")
     
+    # PAYWALL GATING LOGIC (in specified order)
+    
+    # 1. If requester is an owner, allow unconditionally
+    if is_owner(email):
+        print(f"Owner access granted for {email}")
+    
+    # 2. If this session was paid via checkout, allow
+    elif sessions.get(session_id, {}).get("paid"):
+        print(f"Paid session access granted for {session_id}")
+    
+    # 3. If email provided, check for active Stripe subscription
+    elif email:
+        billing_status = billing_status_internal(email)
+        if billing_status.active:
+            print(f"Active subscription access granted for {email}")
+        else:
+            raise HTTPException(
+                status_code=402,
+                detail="Please subscribe to unlock downloads (or sign in with your subscription email)."
+            )
+    
+    # 4. No access criteria met
+    else:
+        raise HTTPException(
+            status_code=402,
+            detail="Please subscribe to unlock downloads (or sign in with your subscription email)."
+        )
+    
+    # Access granted - stream the file
     def iter_file():
         with open(file_path, 'rb') as file:
             while True:
@@ -923,6 +1038,37 @@ async def preview_files(session_id: str = Query(...), n: int = Query(default=100
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Preview failed: {str(e)}")
+
+
+# Billing Endpoints
+
+@api_router.get("/billing/status")
+async def get_billing_status(email: str = Query(..., description="Email to check subscription status")):
+    """
+    Check billing/subscription status for an email
+    Returns active status and renewal timestamp if applicable
+    """
+    if not email or not email.strip():
+        raise HTTPException(status_code=400, detail="Email is required")
+    
+    billing_status = billing_status_internal(email.strip())
+    
+    return {
+        "email": email.strip().lower(),
+        "active": billing_status.active,
+        "renewal": billing_status.renewal
+    }
+
+
+@api_router.get("/billing/owners")
+async def get_owners():
+    """
+    Debug endpoint to view owner whitelist
+    No secrets exposed - just the normalized email list
+    """
+    return {
+        "owners": sorted(list(OWNER_SET))
+    }
 
 
 # Health and debug endpoints (before main routes)

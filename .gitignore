@@ -135,7 +135,6 @@ Thumbs.db
 
 # Frontend build artifacts
 node_modules/
-frontend/dist/
 frontend/build/
 *.log
 npm-debug.log*

@@ -4,4 +4,5 @@ gunicorn==21.2.0
 pandas==2.2.2
 rapidfuzz[speedup]==3.9.3
 python-multipart==0.0.9
-jellyfish==1.0.4 
+jellyfish==1.0.4
+stripe==7.5.0 
