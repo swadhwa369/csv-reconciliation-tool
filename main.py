@@ -1071,6 +1071,64 @@ async def get_owners():
     }
 
 
+@api_router.get("/_stripe_key")
+async def get_stripe_key():
+    """Returns the Stripe publishable key for frontend integration."""
+    return {"publishable_key": STRIPE_PUBLISHABLE_KEY}
+
+
+@api_router.post("/billing/subscribe")
+async def create_subscription(request: dict):
+    """Create a new Stripe subscription."""
+    email = request.get("email")
+    payment_method_id = request.get("payment_method_id")
+    
+    if not email or not payment_method_id:
+        raise HTTPException(status_code=400, detail="Email and payment method required")
+    
+    if not stripe.api_key:
+        raise HTTPException(status_code=503, detail="Payment processing not configured")
+    
+    try:
+        # Create customer
+        customer = stripe.Customer.create(
+            email=email,
+            payment_method=payment_method_id,
+            invoice_settings={
+                'default_payment_method': payment_method_id,
+            },
+        )
+        
+        # Attach payment method to customer
+        stripe.PaymentMethod.attach(
+            payment_method_id,
+            customer=customer.id,
+        )
+        
+        # Create subscription (you'll need to create a product/price in Stripe dashboard)
+        # For now, we'll use a test price ID - replace with your actual price ID
+        subscription = stripe.Subscription.create(
+            customer=customer.id,
+            items=[{
+                'price': 'price_1234567890', # Replace with your actual price ID
+            }],
+            payment_behavior='default_incomplete',
+            payment_settings={'save_default_payment_method': 'on_subscription'},
+            expand=['latest_invoice.payment_intent'],
+        )
+        
+        return {
+            "subscription_id": subscription.id,
+            "client_secret": subscription.latest_invoice.payment_intent.client_secret,
+            "status": subscription.status
+        }
+        
+    except stripe.error.StripeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Subscription creation failed")
+
+
 # Health and debug endpoints (before main routes)
 @app.get("/_health")
 async def health_check():

@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CSV Reconciliation Tool</title>
     <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+    <script src="https://js.stripe.com/v3/"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { 
@@ -52,30 +53,165 @@
             transform: translateY(-2px);
         }
         .feature h3 {
-            color: #667eea;
+            color: #495057;
             margin-bottom: 0.5rem;
+        }
+        .feature p {
+            color: #6c757d;
+            font-size: 0.9rem;
         }
         .cta {
             margin-top: 2rem;
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            flex-wrap: wrap;
         }
         .btn {
             display: inline-block;
-            padding: 12px 24px;
+            padding: 0.75rem 1.5rem;
             background: #667eea;
             color: white;
             text-decoration: none;
             border-radius: 6px;
-            margin: 0 8px;
-            transition: background 0.3s ease;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            border: none;
+            cursor: pointer;
         }
         .btn:hover {
-            background: #5a6fd8;
+            background: #5a67d8;
+            transform: translateY(-1px);
         }
         .btn.secondary {
             background: #6c757d;
         }
         .btn.secondary:hover {
-            background: #5a6268;
+            background: #545b62;
+        }
+
+        /* Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background-color: rgba(0,0,0,0.5);
+            animation: fadeIn 0.3s ease;
+        }
+        .modal.show {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-content {
+            background: white;
+            margin: auto;
+            padding: 2rem;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 500px;
+            position: relative;
+            animation: slideIn 0.3s ease;
+        }
+        .close {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            position: absolute;
+            right: 20px;
+            top: 15px;
+            cursor: pointer;
+        }
+        .close:hover {
+            color: #000;
+        }
+        .form-group {
+            margin-bottom: 1rem;
+            text-align: left;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+            color: #495057;
+        }
+        .form-group input {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 1rem;
+        }
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.2);
+        }
+        #card-element {
+            padding: 0.75rem;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            margin-bottom: 1rem;
+        }
+        .error-message {
+            color: #dc3545;
+            font-size: 0.875rem;
+            margin-top: 0.5rem;
+        }
+        .success-message {
+            color: #28a745;
+            font-size: 0.875rem;
+            margin-top: 0.5rem;
+        }
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        @keyframes slideIn {
+            from { transform: translateY(-50px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .tabs {
+            display: flex;
+            margin-bottom: 1rem;
+        }
+        .tab {
+            flex: 1;
+            padding: 0.5rem;
+            text-align: center;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all 0.3s ease;
+        }
+        .tab.active {
+            border-bottom-color: #667eea;
+            color: #667eea;
+            font-weight: 500;
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
         }
     </style>
 </head>
@@ -113,12 +249,312 @@
                 or integrate directly with the <code>/api/upload</code>, <code>/api/reconcile</code>, 
                 and <code>/api/download</code> endpoints.
             </p>
+            <p style="color: #6c757d; font-size: 0.9rem; margin-top: 0.5rem;">
+                <strong>Note:</strong> Downloads require a subscription. Try downloading a sample file to see our payment flow.
+            </p>
+        </div>
+    </div>
+
+    <!-- Payment Modal -->
+    <div id="paymentModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closePaymentModal()">&times;</span>
+            <h2 style="color: #667eea; margin-bottom: 1rem; text-align: center;">🔐 Download Access Required</h2>
+            
+            <div class="tabs">
+                <div class="tab active" onclick="showTab('signin')">Sign In</div>
+                <div class="tab" onclick="showTab('subscribe')">Subscribe</div>
+            </div>
+
+            <!-- Sign In Tab -->
+            <div id="signin-tab" class="tab-content active">
+                <p style="color: #6c757d; margin-bottom: 1rem; text-align: center;">
+                    Already have a subscription? Enter your email to verify access.
+                </p>
+                <form id="signinForm">
+                    <div class="form-group">
+                        <label for="signinEmail">Email Address</label>
+                        <input type="email" id="signinEmail" placeholder="your@email.com" required>
+                    </div>
+                    <button type="submit" class="btn" style="width: 100%;">
+                        <span id="signinButtonText">Verify Access</span>
+                        <span id="signinLoading" class="loading" style="display: none;"></span>
+                    </button>
+                    <div id="signinMessage"></div>
+                </form>
+            </div>
+
+            <!-- Subscribe Tab -->
+            <div id="subscribe-tab" class="tab-content">
+                <p style="color: #6c757d; margin-bottom: 1rem; text-align: center;">
+                    Get unlimited downloads for $9/month. Cancel anytime.
+                </p>
+                <form id="subscriptionForm">
+                    <div class="form-group">
+                        <label for="email">Email Address</label>
+                        <input type="email" id="email" placeholder="your@email.com" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="card-element">Card Details</label>
+                        <div id="card-element"></div>
+                        <div id="card-errors" class="error-message"></div>
+                    </div>
+                    <button type="submit" class="btn" style="width: 100%;">
+                        <span id="subscribeButtonText">Subscribe for $9/month</span>
+                        <span id="subscribeLoading" class="loading" style="display: none;"></span>
+                    </button>
+                    <div id="subscriptionMessage"></div>
+                </form>
+            </div>
+
+            <p style="color: #6c757d; font-size: 0.875rem; text-align: center; margin-top: 1rem;">
+                🔒 Secure payment processing by Stripe<br>
+                📧 No spam, cancel anytime
+            </p>
         </div>
     </div>
 
     <script>
-        // SPA Router - handle navigation
+        // Global variables
+        let stripe = null;
+        let elements = null;
+        let cardElement = null;
+        let pendingDownload = null;
+
+        // Initialize Stripe
+        async function initializeStripe() {
+            try {
+                // Get Stripe publishable key from environment
+                const response = await fetch('/api/_stripe_key');
+                if (response.ok) {
+                    const data = await response.json();
+                    stripe = Stripe(data.publishable_key);
+                    elements = stripe.elements();
+                    
+                    cardElement = elements.create('card');
+                    cardElement.mount('#card-element');
+                    
+                    cardElement.on('change', function(event) {
+                        const displayError = document.getElementById('card-errors');
+                        if (event.error) {
+                            displayError.textContent = event.error.message;
+                        } else {
+                            displayError.textContent = '';
+                        }
+                    });
+                } else {
+                    console.warn('Stripe not configured');
+                }
+            } catch (error) {
+                console.warn('Failed to initialize Stripe:', error);
+            }
+        }
+
+        // Tab switching
+        function showTab(tabName) {
+            // Update tab buttons
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            document.querySelector(`.tab:nth-child(${tabName === 'signin' ? '1' : '2'})`).classList.add('active');
+            
+            // Update tab content
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+            document.getElementById(tabName + '-tab').classList.add('active');
+        }
+
+        // Modal functions
+        function showPaymentModal(downloadData) {
+            pendingDownload = downloadData;
+            document.getElementById('paymentModal').classList.add('show');
+        }
+
+        function closePaymentModal() {
+            document.getElementById('paymentModal').classList.remove('show');
+            pendingDownload = null;
+        }
+
+        // Sign-in form handler
+        document.getElementById('signinForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const email = document.getElementById('signinEmail').value;
+            const button = document.getElementById('signinButtonText');
+            const loading = document.getElementById('signinLoading');
+            const message = document.getElementById('signinMessage');
+            
+            // Show loading state
+            button.style.display = 'none';
+            loading.style.display = 'inline-block';
+            message.innerHTML = '';
+            
+            try {
+                if (pendingDownload) {
+                    // Retry download with email
+                    const downloadUrl = `/api/download/${pendingDownload.fileType}?session_id=${pendingDownload.sessionId}&email=${encodeURIComponent(email)}`;
+                    const response = await fetch(downloadUrl);
+                    
+                    if (response.ok) {
+                        // Success! Download the file
+                        const blob = await response.blob();
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `${pendingDownload.fileType}.csv`;
+                        document.body.appendChild(a);
+                        a.click();
+                        window.URL.revokeObjectURL(url);
+                        document.body.removeChild(a);
+                        
+                        message.innerHTML = '<div class="success-message">✅ Access verified! Your download has started.</div>';
+                        setTimeout(() => closePaymentModal(), 2000);
+                    } else if (response.status === 402) {
+                        message.innerHTML = '<div class="error-message">❌ No active subscription found for this email. Please subscribe below.</div>';
+                        showTab('subscribe');
+                        document.getElementById('email').value = email;
+                    } else {
+                        const error = await response.json();
+                        message.innerHTML = `<div class="error-message">❌ ${error.detail || 'Verification failed'}</div>`;
+                    }
+                }
+            } catch (error) {
+                message.innerHTML = '<div class="error-message">❌ Network error. Please try again.</div>';
+            } finally {
+                // Reset button state
+                button.style.display = 'inline';
+                loading.style.display = 'none';
+            }
+        });
+
+        // Subscription form handler
+        document.getElementById('subscriptionForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            if (!stripe || !cardElement) {
+                document.getElementById('subscriptionMessage').innerHTML = 
+                    '<div class="error-message">❌ Payment system not available. Please try again later.</div>';
+                return;
+            }
+            
+            const email = document.getElementById('email').value;
+            const button = document.getElementById('subscribeButtonText');
+            const loading = document.getElementById('subscribeLoading');
+            const message = document.getElementById('subscriptionMessage');
+            
+            // Show loading state
+            button.style.display = 'none';
+            loading.style.display = 'inline-block';
+            message.innerHTML = '';
+            
+            try {
+                // Create payment method
+                const {paymentMethod, error: pmError} = await stripe.createPaymentMethod({
+                    type: 'card',
+                    card: cardElement,
+                    billing_details: {
+                        email: email,
+                    },
+                });
+                
+                if (pmError) {
+                    message.innerHTML = `<div class="error-message">❌ ${pmError.message}</div>`;
+                    return;
+                }
+                
+                // Create subscription (this would need backend implementation)
+                const response = await fetch('/api/billing/subscribe', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        email: email,
+                        payment_method_id: paymentMethod.id
+                    })
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    message.innerHTML = '<div class="success-message">✅ Subscription created! Verifying access...</div>';
+                    
+                    // Try the download again
+                    setTimeout(async () => {
+                        if (pendingDownload) {
+                            const downloadUrl = `/api/download/${pendingDownload.fileType}?session_id=${pendingDownload.sessionId}&email=${encodeURIComponent(email)}`;
+                            const downloadResponse = await fetch(downloadUrl);
+                            
+                            if (downloadResponse.ok) {
+                                const blob = await downloadResponse.blob();
+                                const url = window.URL.createObjectURL(blob);
+                                const a = document.createElement('a');
+                                a.href = url;
+                                a.download = `${pendingDownload.fileType}.csv`;
+                                document.body.appendChild(a);
+                                a.click();
+                                window.URL.revokeObjectURL(url);
+                                document.body.removeChild(a);
+                                
+                                message.innerHTML = '<div class="success-message">🎉 Subscription active! Your download has started.</div>';
+                                setTimeout(() => closePaymentModal(), 2000);
+                            }
+                        }
+                    }, 1000);
+                } else {
+                    const error = await response.json();
+                    message.innerHTML = `<div class="error-message">❌ ${error.detail || 'Subscription failed'}</div>`;
+                }
+            } catch (error) {
+                message.innerHTML = '<div class="error-message">❌ Payment failed. Please try again.</div>';
+            } finally {
+                // Reset button state
+                button.style.display = 'inline';
+                loading.style.display = 'none';
+            }
+        });
+
+        // Intercept download attempts globally
+        window.downloadFile = function(sessionId, fileType) {
+            // Try download without email first
+            fetch(`/api/download/${fileType}?session_id=${sessionId}`)
+                .then(response => {
+                    if (response.ok) {
+                        return response.blob();
+                    } else if (response.status === 402) {
+                        // Show payment modal
+                        showPaymentModal({ sessionId, fileType });
+                        return null;
+                    } else {
+                        throw new Error('Download failed');
+                    }
+                })
+                .then(blob => {
+                    if (blob) {
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `${fileType}.csv`;
+                        document.body.appendChild(a);
+                        a.click();
+                        window.URL.revokeObjectURL(url);
+                        document.body.removeChild(a);
+                    }
+                })
+                .catch(error => {
+                    alert('Download failed: ' + error.message);
+                });
+        };
+
+        // Close modal when clicking outside
+        window.onclick = function(event) {
+            const modal = document.getElementById('paymentModal');
+            if (event.target == modal) {
+                closePaymentModal();
+            }
+        }
+
+        // Initialize when page loads
         document.addEventListener('DOMContentLoaded', function() {
+            // Initialize Stripe
+            initializeStripe();
+            
             // Simple client-side routing for SPA behavior
             const path = window.location.pathname;
             
