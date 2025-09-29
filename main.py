@@ -185,7 +185,7 @@ class BillingStatus:
     renewal: Optional[int] = None  # Timestamp for renewal date
 
 
-def is_owner(email: str | None) -> bool:
+def is_owner(email: Optional[str]) -> bool:
     """Check if email is in owner whitelist"""
     return bool(email and email.strip().lower() in OWNER_SET)
 
@@ -934,7 +934,7 @@ async def reconcile_files(request: ReconcileRequest):
 async def download_file(
     file_type: str, 
     session_id: str = Query(...), 
-    email: str | None = Query(None, description="Email for subscription verification or owner access")
+    email: Optional[str] = Query(None, description="Email for subscription verification or owner access")
 ):
     """
     Download reconciliation results (CSV files)
